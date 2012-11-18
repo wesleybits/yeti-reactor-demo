@@ -1,0 +1,191 @@
+module yeti.util.reactor;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.Semaphore;
+import java.lang: Runnable, Thread;
+
+makeThread thunk = 
+   (class Thd extends Runnable
+        void run()
+            thunk ()
+    end;
+    rn = new Thd();
+    new Thread(rn));
+
+/**
+ * Group: Threads (easier multithreading for Yeti)
+ * Creates a simple atomic reference for lockless global 
+ * mutability in a thread-safe way for simple values.
+ *
+ * Arguments:
+ * init - the initial value of the atom
+ *
+ * Description:
+ * This is most appropriately used if you need a simple, 
+ * non-structured way of having a shared variabled 
+ * several threads.  It is not appropriate for data 
+ * structures, such as arrays or hashes.  For those, see
+ * reference.
+ */
+atom init is 'a -> {var value is 'a}= 
+   (ref = new AtomicReference(init unsafely_as ~Object);
+    {
+        get value () = ref#get() unsafely_as 'a,
+        set value v  = ref#set(v unsafely_as ~Object),
+    });
+
+/**
+ * Group: Threads
+ * Creates a thread-safe mutable reference to a data 
+ * structure via a copy-on-write locking policy.
+ *
+ * Arguments:
+ * init - the initial value of the reference
+ *
+ * Description:
+ * This creates a very safe way of sharing a mutable 
+ * data structure between threads.  The value field
+ * is only readable, to change the contents of the 
+ * reference, you must call the update member function.
+ *
+ * Examples:
+ * : ref = refernce ['foo':11, 'bar':22];
+ * : ref.update do h: h.['baz'] := 33; h done;
+ * : ref.value
+ * : => ['foo':11, 'bar':22, 'baz':33] is hash<string, number>
+ */
+reference init 
+    is map<'a, 'b> -> 
+       {value is map<'a, 'b>, 
+        update is (map<'a, 'b> -> map<'a, 'b>) -> ()} = 
+   (var val = init;
+    var cpy = init;
+    var wrt = false;
+    lock    = new Object();
+    {
+        get value () = if wrt then copy cpy else copy val fi,
+
+        update fn =
+           (synchronized lock do:
+                cpy := copy val;
+                wrt := true;
+                val := fn val;
+            done;
+            wrt := false),
+    });
+
+mailbox () =
+   (var queue = array [];
+    fill = new Semaphore(0, true);
+    {
+        send v =
+           (synchronized queue do: push queue v done;
+            fill#release()),
+
+        receive () = 
+           (fill#acquire();
+            synchronized queue do:
+                res    = head queue;
+                queue := tail queue |> array;
+                res
+            done),
+
+        messageList () = receive () :. \(messageList ())
+    });
+
+/**
+ * Group: Thread
+ * Creates a thread that receives messages and does something
+ * useful with them.
+ *
+ * Arguments:
+ * reaction - the function to apply each message to.
+ *
+ * Description:
+ * A reactor will wait until a message is sent to it, and then
+ * it will do whatever you want it to do with that message.
+ * It can be used much in the same way as Erlang's actors,
+ * however, it is not an isolated process.
+ *
+ * Examples:
+ * A reactor:
+ * : actorKinda = reactor
+ * :    \case of
+ * :         Some n: // do something with n
+ * :         None  : // do something with none
+ * :         Stop _: // handle a stop condition
+ * :         _:      // this is something useless, ignore it?
+ * :     esac;
+ *
+ * You send a message like this:
+ * : Some val |> actorKinda.send // sends a message to actor
+ *
+ * You can tell the reactor to stop.  This will send a Stop () 
+ * message to the reactor in case it's waiting for a new
+ * message, and then wait until it's done:
+ * : actorKinda.stop ()
+ */
+reactor reaction = 
+   (mb = mailbox ();
+    var running = true;
+    th = makeThread \(running loop (mb.receive () |> reaction));
+    {
+        send v = 
+            if running then
+               (mb.send v;
+                if not th#isAlive()
+                    then th#start()
+                fi)
+            fi,
+
+        stop () = 
+           (running := false; 
+            mb.send (Stop ());
+            th#join())
+    });
+
+/**
+ * Group: Thread
+ * Causes the current thread to sleep for a number of milliseconds.
+ *
+ * Arguments:
+ * ms - the amount of time to sleep in milliseconds
+ */
+sleep ms = Thread#sleep(ms);
+
+/**
+ * Group: Thread
+ * Causes the current thread to yield it's time to other threads.
+ *
+ * Arguments:
+ * () - yield is a thunk that calls Thread.yield()
+ */
+yield = \(Thread#yield());
+
+/**
+ * Group: Thread
+ * Creates a future that will run a closed computation in
+ * a new thread.  It will yield a value when touched.
+ *
+ * Arguments:
+ * comp - a thunk that yields a value when run
+ * 
+ * Examples:
+ * : theFuture = future someLongRunningComputation 30000
+ * : // ... do some other things in the meantime ...
+ * : res = theFuture () // this will touch the future
+ *
+ * Description:
+ * This will take a lazy process and run it in a background
+ * thread.  Futures are not isolated, yet, so be careful that
+ * the computation you hand it doesn't have any side-effects.
+ * Touching the future while it is still running will cause 
+ * your current thread to join it before handing back the 
+ * value, otherwise it will yield the value immediately.
+ */
+// futures don't work as of yet...
+future proc val = 
+   (var res = val;
+    thd = makeThread \(res := proc val);
+    \(if thd#isAlive() then thd#join() fi; res));
+
+{atom, reference, reactor, sleep, yield, future}

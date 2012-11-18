@@ -1,0 +1,61 @@
+program reactorTest;
+load src.reactor;
+import java.util.Random;
+
+customerCount = atom 0;
+customerReject = atom 0;
+waitingRoom  = reference (array []);
+
+incCustomers n = customerCount.value := customerCount.value + n;
+
+incRejected n  = customerReject.value := customerReject.value + n;
+
+barber = reactor
+   (rdn = new Random();
+    rand n is number -> number = rdn#nextInt(n);
+   \case of
+        Cut _: if length waitingRoom.value == 0 
+                    then yield () // if there's no one around, then nap
+                    else          // otherwise, cut some hair,
+                        println "[b] cutting hair of customer \(head waitingRoom.value)"; 
+                        waitingRoom.update do a: 
+                            tail a |> array
+                        done;
+                        incCustomers 1;
+                        rand 400 |> (+100) |> sleep;
+                fi;
+        Stop _: println "[b] barber is quitting for today";
+        x: println "[b] barber doesn't respond to \(x)";
+    esac);
+
+shop = reactor
+   (rdn = new Random();
+    rand n is number -> number = rdn#nextInt(n);
+   \case of
+        Enter n:
+           (if length waitingRoom.value >= 3
+                then // customer leaves if there are no chairs available
+                    println "[s] shop full, turning customer \(n) away";
+                    incRejected 1
+                else // customer sits and waits
+                    println "[s] customer \(n) enters shop";
+                    waitingRoom.update do a: 
+                        push a n; a
+                     done;
+                    Cut () |> barber.send
+            fi;
+            rand 100 |> (+100) |> sleep); 
+        Stop _: println "[s] shop is closing for today";
+        x: println "[s] shop doesn't respond to \(x)";
+    esac);
+
+for [0..19] do n:
+    Enter n |> shop.send
+done;
+sleep 8000;    // workday is 8 hours,
+shop.stop ();  // shop closes before the barber leaves
+barber.stop ();
+println "\(customerCount.value) customers got haircuts today!";
+println "\(customerReject.value) customers went somewhere else!";
+println "\(customerReject.value + customerCount.value) visited today!";
+
