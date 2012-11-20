@@ -101,17 +101,23 @@ reference init
     is map<'a, 'b> -> 
        {value is map<'a, 'b>, 
         update is (map<'a, 'b> -> map<'a, 'b>) -> ()} = 
-   (var val = init;
-    var cpy = init;
-    var wrt = false;
+   (val = atom init;
+    cpy = atom init;
+    wrt = atom false;
+    lock = new Object();
     {
-        get value () = if wrt then copy cpy else copy val fi,
+        get value () = 
+            if wrt.value then copy cpy.value 
+            else copy val.value 
+            fi,
 
         update fn =
-           (synchronized cpy do: cpy := val done;
-            synchronized wrt do: wrt := true done;
-            synchronized val do: val := fn val done;
-            synchronized wrt do: wrt := false done)
+           (synchronized lock do:
+                cpy.value := val.value;
+                wrt.value := true;
+                val.value := fn val.value;
+                wrt.value := false;
+            done)
     });
 
 /**
