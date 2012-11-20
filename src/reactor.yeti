@@ -113,7 +113,7 @@ reference init
 
         update fn =
            (synchronized lock do:
-                cpy.value := val.value;
+                cpy.value := copy val.value;
                 wrt.value := true;
                 val.value := fn val.value;
                 wrt.value := false;
