@@ -1,18 +1,55 @@
 module yeti.util.reactor;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.Semaphore;
-import java.lang: Runnable, Thread;
 
-makeThread thunk = 
-   (class Thd extends Runnable
-        void run()
-            thunk ()
-    end;
-    rn = new Thd();
-    new Thread(rn));
+import java.util.concurrent: 
+            Semaphore, Executors, ExecutorService, TimeUnit,
+            Callable;
+
+import java.lang: 
+            Runnable, Thread;
+
+futurePool = Executors#newCachedThreadPool(); 
+            // likely inappropriate.
 
 /**
- * Group: Threads (easier multithreading for Yeti)
+ * Group: Thread (easier multithreading for Yeti)
+ * Creates an executor service with a fixed thread pool,
+ * needed to use reactors.
+ *
+ * Arguments:
+ * n - the size of the returned Executor thread pool
+ */
+pool n = Executors#newFixedThreadPool(n);
+
+/**
+ * Group: Thread
+ * Kills all threads in a given pool, with the given 
+ * timeout.
+ *
+ * Arguments:
+ * ex - the pool to stop
+ * timeout - the number of seconds you're willing to wait
+ */
+killAll ex timeout is ~ExecutorService -> number -> boolean =
+   (_ = ex#shutdownNow();
+    ex#awaitTermination(timeout, TimeUnit#SECONDS));
+
+/**
+ * Group: Thread
+ * Kills all threads in the internal pool, waits 10 seconds 
+ * before erring out.
+ */
+simplyKillAll = \(killAll futurePool 10);
+
+/**
+ * Group: Thread
+ * This interrupts the current thread, useful for getting
+ * a reactor to stop itself.
+ */
+interruptMyself = \(Thread#currentThread()#interrupt());
+
+/**
+ * Group: Thread (easier multithreading for Yeti)
  * Creates a simple atomic reference for lockless global 
  * mutability in a thread-safe way for simple values.
  *
@@ -34,7 +71,7 @@ atom init is 'a -> {var value is 'a}=
     });
 
 /**
- * Group: Threads
+ * Group: Thread
  * Creates a thread-safe mutable reference to a data 
  * structure via a copy-on-write locking policy.
  *
@@ -42,10 +79,17 @@ atom init is 'a -> {var value is 'a}=
  * init - the initial value of the reference
  *
  * Description:
- * This creates a very safe way of sharing a mutable 
- * data structure between threads.  The value field
- * is only readable, to change the contents of the 
- * reference, you must call the update member function.
+ * This creates a very safe way of sharing mutable 
+ * data between threads in a synchronized manner.
+ * It returns a struct with value and update members.
+ * reference.value will give you a copy of whatever 
+ * is safe to read at the time (references are copy-
+ * on-write, so if some other thread is writing to 
+ * it, you'll get to see what it was before the 
+ * write started).  reference.update requires a 
+ * function argument that will return the new value
+ * of this reference, and it's the only way to 
+ * set the reference's new value.
  *
  * Examples:
  * : ref = refernce ['foo':11, 'bar':22];
@@ -60,19 +104,41 @@ reference init
    (var val = init;
     var cpy = init;
     var wrt = false;
-    lock    = new Object();
     {
         get value () = if wrt then copy cpy else copy val fi,
 
         update fn =
-           (synchronized lock do:
-                cpy := copy val;
-                wrt := true;
-                val := fn val;
-            done;
-            wrt := false),
+           (synchronized cpy do: cpy := val done;
+            synchronized wrt do: wrt := true done;
+            synchronized val do: val := fn val done;
+            synchronized wrt do: wrt := false done)
     });
 
+/**
+ * Group: Thread
+ * Creates a general-purpose mailbox for thread-safe 
+ * message passing.
+ *
+ * Description:
+ * This mailbox is basically a blocking queue.  The 
+ * function returns a struct with send, receive and 
+ * messageList function members.  mailbox.send pushes 
+ * a single value onto the mailbox. mailbox.receive
+ * either pops a message off of the mailbox, or blocks
+ * until it has one.  mailbox.messageList will return
+ * a lazy list of the mailbox's future contents, blocking
+ * on the tail if needed.
+ *
+ * Examples:
+ * : mb = mailbox (); // makes a new mailbox
+ * : Some v |> mb.send; // sends a message onto the mailbox
+ * : u = mb.receive (); // receives a message from the mailbox
+ * : for (mb.messageList ()) do msg: ... done;
+ * :   // the above is useful if you wish to process everything
+ * :   // that comes through the mailbox without any possibility
+ * :   // of stoping (save from doing something especially thread-unsafe).  
+ * :   // You aught not do this unless you know what you're doing.
+ */
 mailbox () =
    (var queue = array [];
     fill = new Semaphore(0, true);
@@ -99,6 +165,7 @@ mailbox () =
  *
  * Arguments:
  * reaction - the function to apply each message to.
+ * ex - the ExecutorService that the reactor will run under.
  *
  * Description:
  * A reactor will wait until a message is sent to it, and then
@@ -108,7 +175,7 @@ mailbox () =
  *
  * Examples:
  * A reactor:
- * : actorKinda = reactor
+ * : actorKinda = reactor myPool
  * :    \case of
  * :         Some n: // do something with n
  * :         None  : // do something with none
@@ -117,40 +184,54 @@ mailbox () =
  * :     esac;
  *
  * You send a message like this:
- * : Some val |> actorKinda.send // sends a message to actor
+ * : Some val |> actorKinda // sends a message to reactor
  *
- * You can tell the reactor to stop.  This will send a Stop () 
- * message to the reactor in case it's waiting for a new
- * message, and then wait until it's done:
- * : actorKinda.stop ()
+ * Reactors will continue to process messages until you 
+ * shut down your pool:
+ * : killAll myPool 1; // shuts down pool with a 1 second timeout,
+ * :                   // effectively killing the reactor.
+ *
+ * Or if you wish for the reactor to shut itself down, you can
+ * define it like this:
+ * : sadActor = reactor myPool
+ * :    \case of
+ * :         BeHappy _: println "I can't!";
+ * :         BeSad _:   println "Go away!";
+ * :         StopIt _: (println "FINE!!"; interruptMyself ());
+ * :     esac;
+ *
+ * Thereby, sending the reactor a StopIt message will cause it to 
+ * halt and die, essentially making it useless:
+ * : > BeHappy () |> sadActor
+ * : I can't!
+ * : > BeSad () |> sadActor
+ * : Go away!
+ * : > StopIt () |> sadActor
+ * : FINE!!
+ * : > BeHappy () |> sadActor
+ * : > BeSad () |> sadActor
+ * : > Wtf () |> sadActor
+ *
+ * As you can see, telling a sadActor to stop it will make it
+ * unresponsive.
  */
+// reactor ex reaction is ~ExecutorService -> ('a -> ()) -> 'a -> () =
+// I want to be able to offer the option of having a reactor run in
+// a user's own executor service, but simpleReactor won't compile.
 reactor reaction = 
    (mb = mailbox ();
-    var running = true;
-    th = makeThread \(running loop (mb.receive () |> reaction));
-    {
-        send v = 
-            if running then
-               (mb.send v;
-                if not th#isAlive()
-                    then th#start()
-                fi)
-            fi,
-
-        stop () = 
-           (running := false; 
-            mb.send (Stop ());
-            th#join())
-    });
+    th = runnable \((not Thread#interrupted()) loop 
+                        (mb.receive () |> reaction));
+    futurePool#execute(th);
+    do msg: mb.send msg done);
 
 /**
  * Group: Thread
- * Causes the current thread to sleep for a number of milliseconds.
- *
- * Arguments:
- * ms - the amount of time to sleep in milliseconds
+ * A simple way to create a reactor running in the internal
+ * thread pool.
  */
-sleep ms = Thread#sleep(ms);
+// simpleReactor = reactor futurePool;
+// somehow doesn't compile for now...
 
 /**
  * Group: Thread
@@ -160,6 +241,13 @@ sleep ms = Thread#sleep(ms);
  * () - yield is a thunk that calls Thread.yield()
  */
 yield = \(Thread#yield());
+
+callable fn = 
+   (class Call extends Callable
+        Object call()
+            fn () |>  (unsafely_as ~Object)
+    end;
+    new Call());
 
 /**
  * Group: Thread
@@ -182,10 +270,11 @@ yield = \(Thread#yield());
  * your current thread to join it before handing back the 
  * value, otherwise it will yield the value immediately.
  */
-// futures don't work as of yet...
-future proc val = 
-   (var res = val;
-    thd = makeThread \(res := proc val);
-    \(if thd#isAlive() then thd#join() fi; res));
+// futures don't work as of yet..
+future proc is (() -> 'a) -> (() -> 'a) = 
+   (fute = futurePool#submit(callable proc);
+    \(fute#get() unsafely_as 'a));
 
-{atom, reference, reactor, sleep, yield, future}
+{atom, reference, mailbox, reactor, //simpleReactor, 
+ pool, killAll, simplyKillAll, interruptMyself, 
+ yield, future}

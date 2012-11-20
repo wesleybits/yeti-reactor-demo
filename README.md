@@ -11,7 +11,8 @@ into action by implementing the barbershop problem in under 70
 lines.  It runs without droping data or deadlocking.
 
 I'm posting this here mostly to expose the source, but to get it
-running, you'll need [Yeti](https://github.com/mth/yeti.git) first,
-then all you need to do is compile `test.yeti`.  The reactors module
-will just compile into it automically.
+running, you'll need [Yeti](https://github.com/mth/yeti.git) first.
+See build.sh and run.sh for the build sequence and run commands.  If 
+you're running UNIX, like OSX or Linux, you can run these scripts
+directly with the Yeti compiler in the same directory.
 
